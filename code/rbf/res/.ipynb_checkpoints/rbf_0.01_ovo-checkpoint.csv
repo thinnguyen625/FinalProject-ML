@@ -1,0 +1,3 @@
+gamma,fit_time,tr_err,va_err,te_err,best_tr,best_te,name
+0.25,7147.710419178009,0.88644,0.8936,0.8865,False,False,rbf_0.01_0.25_ovo
+0.5,7663.002840995789,0.88644,0.8936,0.8865,False,False,rbf_0.01_0.5_ovo
