@@ -1,4 +1,4 @@
-gamma,fit_time,tr_err,va_err,best_va,name
+gamma,fit_time,tr_err,va_err,best_te,name
 0.0005,381.4057794,0.03336,0.0395,FALSE,rbf_50.0_0.0005_ovo
 0.005,341.3040311,0.00016,0.0195,FALSE,rbf_50.0_0.005_ovo
 0.025,638.46789,0,0.015,TRUE,rbf_50.0_0.025_ovo

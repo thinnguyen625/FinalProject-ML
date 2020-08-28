@@ -37,25 +37,26 @@ def single_fit(params):
     start = time.time()
     single_rbf.model.fit(train_X, train_Y)
     single_rbf.fit_time = time.time() - start
-    print('     -', single_rbf.name, 'in', single_rbf.fit_time, 'seconds')
     return single_rbf
 
-def single_predict(params):
+def single_score(params):
     '''
-    Predict on all the three data parts (train, valid, test) using the model attribute of single_rbf object
+    Predict on a data part (train or valid) using the 'model' attribute of single_rbf object
     -----
     Params:
-        - params: a 7-element tuple (single_rbf object, tr_X, tr_Y, va_X, va_Y, te_X, te_Y)
+        - params: a 4-element tuple (single_rbf object, _X, _Y, phase)
     -----
     Returns:
         - single_rbf object
     
     '''
-    single_rbf, tr_X, tr_Y, va_X, va_Y, te_X, te_Y = params
-    single_rbf.tr_err = 1 - single_rbf.model.score(tr_X, tr_Y)
-    single_rbf.va_err = 1 - single_rbf.model.score(va_X, va_Y)
-    single_rbf.te_err = 1 - single_rbf.model.score(te_X, te_Y)
-    print('     -', single_rbf.name + ': tr_err %f'%single_rbf.tr_err + ', va_err %f'%single_rbf.va_err + ', te_err %f'%single_rbf.te_err)
+    single_rbf, _X, _Y, phase = params
+    err = 1 - single_rbf.model.score(_X, _Y)
+    if phase == 'tr':
+        single_rbf.tr_err = err
+    elif phase == 'va':
+        single_rbf.va_err = err
+        
     return single_rbf
 
 class single_rbf:
@@ -69,9 +70,7 @@ class single_rbf:
         - fit_time: fit time of each model
         - tr_err: training error
         - va_err: validating error
-        - te_err: testing error
-        - is_best_tr: whether this is the best model so far in the training phase for an individual C
-        - is_best_te: whether this is the best model so far in the testing phase for an individual C
+        - is_best_va: whether this is the best model so far in the validating phase for an individual C
     '''
     def __init__(self, C, gamma, decision_function_shape, res_path):
         self.model = SVC(kernel='rbf', C=C, gamma=gamma, decision_function_shape=decision_function_shape)
@@ -80,9 +79,7 @@ class single_rbf:
         self.fit_time = None
         self.tr_err = None
         self.va_err = None
-        self.te_err = None
-        self.is_best_tr = False
-        self.is_best_te = False
+        self.is_best_va = False
 
 class multi_rbf:
     '''
@@ -96,10 +93,8 @@ class multi_rbf:
         - res_path: the path to the result model (default: inherit from cfg)
         - n_jobs: number of subprocess to run (default: 2; by now, this code only accepts n_jobs = 2)
         - name: 'rbf_' + str(self.C) + '_' + self.decision_function_shape
-        - train_X, train_Y, val_X, val_Y, test_X, test_Y: the data parts
         - single_rbf_list: the list of single_rbf instances
-        - best_tr_idx: index in single_rbf_list of the model which has best training error for an individual C
-        - best_tr_idx: index in single_rbf_list of the model which has best testing error for an individual C
+        - best_va_idx: index in single_rbf_list of the model which has best validating error for an individual C
     '''
     def __init__(self, C, gammas=cfg._gammas, decision_function_shape='ovo', wd=cfg._wd, res_path=cfg._res_path, n_jobs=2):
         self.C = C
@@ -110,24 +105,20 @@ class multi_rbf:
         self.n_jobs = n_jobs if n_jobs == 2 else 2
         self.name = 'rbf_' + str(self.C) + '_' + self.decision_function_shape
 
-        self.train_X, self.train_Y = None, None
-        self.val_X, self.val_Y = None, None
-        self.test_X, self.test_X = None, None
-        self.read_mnist()
-
         self.single_rbf_list = []
         for gamma in gammas:
             self.single_rbf_list.append(single_rbf(self.C, gamma, self.decision_function_shape, self.res_path))
 
-        self.best_tr_idx = None
-        self.best_te_idx = None
+        self.best_va_idx = None
 
-    def run(self, n_samples):
+    def run(self, n_samples, train_X, train_Y, val_X, val_Y):
         '''
-        Fit 2 models at a time then predict on the whole dataset and update the best models so far for an individual C
+        Fit 2 models at a time then score on the training and validating set and update the best models so far for an individual C
             -----
             Params:
-                - n_samples: the number of samples to be used for training, validating and testing (must less than val_Y.shape[0] and test_Y.shape[0])
+                - n_samples: the number of samples to be used for training, validating (must less than val_Y.shape[0])
+                - train_X, train_Y: training set
+                - val_X, val_Y: validation set
             -----
             Returns:
                 - self
@@ -138,137 +129,89 @@ class multi_rbf:
             pool1 = Pool(self.n_jobs)
             self.single_rbf_list[i], self.single_rbf_list[i + 1] = pool1.map_async(single_fit,
                                                                     zip([self.single_rbf_list[i], self.single_rbf_list[i + 1]],
-                                                                    repeat(self.train_X[:n_samples, :]), repeat(self.train_Y[:n_samples]))).get()
+                                                                        repeat(train_X[:n_samples, :]), repeat(train_Y[:n_samples]))).get()
             pool1.terminate()
+            print('     -', self.single_rbf_list[i].name, 'in', self.single_rbf_list[i].fit_time, 'seconds')
+            print('     -', self.single_rbf_list[i + 1].name, 'in', self.single_rbf_list[i + 1].fit_time, 'seconds')
             #------------
-            print(' Predicting...')
+            print(' Scoring...')
             pool2 = Pool(self.n_jobs)
-            self.single_rbf_list[i], self.single_rbf_list[i + 1] = pool2.map_async(single_predict,
-                                                                    zip([self.single_rbf_list[i], self.single_rbf_list[i + 1]],
-                                                                    repeat(self.train_X[:n_samples, :]), repeat(self.train_Y[:n_samples]),
-                                                                    repeat(self.val_X[:n_samples, :]), repeat(self.val_Y[:n_samples]),
-                                                                    repeat(self.test_X[:n_samples, :]), repeat(self.test_Y[:n_samples]))).get()
+            self.single_rbf_list[i], self.single_rbf_list[i + 1] = pool2.map_async(single_score,
+                                                                            zip([self.single_rbf_list[i], self.single_rbf_list[i + 1]],
+                                                                                repeat(val_X[:n_samples, :]), repeat(val_Y[:n_samples]),
+                                                                                ['va'] * self.n_jobs)).get()
             pool2.terminate()
+            print('     -', self.single_rbf_list[i].name + ': va_err %f' % self.single_rbf_list[i].va_err)
+            print('     -', self.single_rbf_list[i + 1].name + ': va_err %f' % self.single_rbf_list[i + 1].va_err)
+            
+            self.update_best(i, i + 1)
 
-            better_tr_idx, better_te_idx = self.get_better_idx(i, i + 1)
-            self.update_best(better_tr_idx, better_te_idx)
+            pool3 = Pool(self.n_jobs)
+            self.single_rbf_list[i], self.single_rbf_list[i + 1] = pool3.map_async(single_score,
+                                                                            zip([self.single_rbf_list[i], self.single_rbf_list[i + 1]],
+                                                                                repeat(train_X[:n_samples, :]), repeat(train_Y[:n_samples]),
+                                                                                ['tr'] * self.n_jobs)).get()
+            pool3.terminate()
+            print('     -', self.single_rbf_list[i].name + ': tr_err %f' % self.single_rbf_list[i].tr_err)
+            print('     -', self.single_rbf_list[i + 1].name + ': tr_err %f' % self.single_rbf_list[i + 1].tr_err)
+            
             print(' --- --- ---')
-        print('Best train:', self.single_rbf_list[self.best_tr_idx].name)
-        print('Best test:', self.single_rbf_list[self.best_te_idx].name)
-        self.make_df()
+            self.make_df()
+
+        print('Best validate:', self.single_rbf_list[self.best_va_idx].name)
         return self
 
-    def get_better_idx(self, i, j):
-        '''
-        Compare the result of 2 models
-        If equal, prefer the model which has smaller gamma
-            -----
-            Params:
-                - i: index of single_rbf instance in self.single_rbf_list
-                - j: index of the other single_rbf to be compared to
-            -----
-            Returns:
-                - better_tr_idx: either i or j
-                - better_te_idx: either i or j (can be the same as better_tr_idx)
-        '''
-        better_tr_idx = None
-        if self.single_rbf_list[i].tr_err <= self.single_rbf_list[j].tr_err:
-            better_tr_idx = i
-        else:
-            better_tr_idx = j
-
-        better_te_idx = None
-        if self.single_rbf_list[i].te_err <= self.single_rbf_list[j].te_err:
-            better_te_idx = i
-        else:
-            better_te_idx = j
-        return better_tr_idx, better_te_idx
-
-    def update_best(self, tr_candidate_idx, te_candidate_idx):
+    def update_best(self, i, j):
         '''
         Compare models' result and update the best model so far for an individual C
         -----
         Params:
-            - tr_candidate_idx: the candidate's index to be compared to the best model in training so far
-            - te_candidate_idx: the candidate's index to be compared to the best model in testing so far
+            - i, j: index of the single_rbf object in self.single_rbf_list
         '''
+        i_va_err = self.single_rbf_list[i].va_err
+        j_va_err = self.single_rbf_list[j].va_err
+        
         #The first run
-        #Save both the models
-        #Warning: I forgot to update is_best_tr and is_best_te status (will be fixed later)
-        if tr_candidate_idx <= 1 or te_candidate_idx <= 1:
-            self.best_tr_idx = tr_candidate_idx
-            tr_model = self.single_rbf_list[tr_candidate_idx].model
-            tr_path = self.single_rbf_list[tr_candidate_idx].path
-            dump(tr_model, open(tr_path, 'wb'))
-            
-            self.best_te_idx = te_candidate_idx
-            te_model = self.single_rbf_list[te_candidate_idx].model
-            te_path = self.single_rbf_list[te_candidate_idx].path
-            dump(te_model, open(te_path, 'wb'))
+        if j <= 1:
+            self.best_va_idx = i if i_va_err <= j_va_err else j
+            va_model = self.single_rbf_list[self.best_va_idx].model
+            va_path = self.single_rbf_list[self.best_va_idx].path
+            self.single_rbf_list[self.best_va_idx].is_best_va = True
+            dump(va_model, open(va_path, 'wb'))
             return
 
-        #Compare the candidate for the best training model so far
-        #If True:
-        #Delete the model file of the current best if the candidate is better and save the candidate model
-        #Change is_best_tr status for candidate to True and for the current best to False
-        #Update best_tr_idx
-        if self.single_rbf_list[tr_candidate_idx].tr_err <= self.single_rbf_list[self.best_tr_idx].tr_err:
-            if os.path.exists(self.single_rbf_list[self.best_tr_idx].path):
-                os.remove(self.single_rbf_list[self.best_tr_idx].path)
-            if not os.path.exists(self.single_rbf_list[tr_candidate_idx].path):
-                model = self.single_rbf_list[tr_candidate_idx].model
-                path = self.single_rbf_list[tr_candidate_idx].path
-                dump(model, open(path, 'wb'))
+        prev_best_va_err = self.single_rbf_list[self.best_va_idx].va_err
+        
+        better_va_idx = i if i_va_err <= j_va_err else j
+        cur_best_va_idx = better_va_idx if self.single_rbf_list[better_va_idx].va_err <= prev_best_va_err else self.best_va_idx
             
-            self.single_rbf_list[self.best_tr_idx].is_best_tr = False
-            self.single_rbf_list[tr_candidate_idx].is_best_tr = True
-            self.best_tr_idx = tr_candidate_idx
-            
-        #Compare the candidate for the best testing model so far
-        #If True:
-        #Delete the model file of the current best if the candidate is better and save the candidate model
-        #Change is_best_te status for candidate to True and for the current best to False
-        #Update best_te_idx
-        if self.single_rbf_list[te_candidate_idx].te_err <= self.single_rbf_list[self.best_te_idx].te_err:
-            if os.path.exists(self.single_rbf_list[self.best_te_idx].path):
-                os.remove(self.single_rbf_list[self.best_te_idx].path)
-            if not os.path.exists(self.single_rbf_list[te_candidate_idx].path):
-                model = self.single_rbf_list[te_candidate_idx].model
-                path = self.single_rbf_list[te_candidate_idx].path
+        if cur_best_va_idx == self.best_va_idx:
+            return
+        else:
+            if os.path.exists(self.single_rbf_list[self.best_va_idx].path):
+                os.remove(self.single_rbf_list[self.best_va_idx].path)
+            if not os.path.exists(self.single_rbf_list[cur_best_va_idx].path):
+                model = self.single_rbf_list[cur_best_va_idx].model
+                path = self.single_rbf_list[cur_best_va_idx].path
                 dump(model, open(path, 'wb'))
+            self.single_rbf_list[self.best_va_idx].is_best_va = False
+            self.single_rbf_list[cur_best_va_idx].is_best_va = True
+            self.best_va_idx = cur_best_va_idx
 
-            self.single_rbf_list[self.best_te_idx].is_best_te = False
-            self.single_rbf_list[te_candidate_idx].is_best_te = True
-            self.best_te_idx = te_candidate_idx
-    
     def make_df(self):
         '''
         Make a pandas DataFrame from the results after training all the models for an individual C
         '''
         df_data = {'gamma': self.gammas, 'fit_time': [],
-                    'tr_err': [], 'va_err': [], 'te_err': [],
-                    'best_tr': [], 'best_te': [],
+                    'tr_err': [], 'va_err': [],
+                    'best_va': [],
                     'name': []}
         for s in self.single_rbf_list:
             df_data['fit_time'].append(s.fit_time)
             df_data['tr_err'].append(s.tr_err)
             df_data['va_err'].append(s.va_err)
-            df_data['te_err'].append(s.te_err)
-            df_data['best_tr'].append(s.is_best_tr)
-            df_data['best_te'].append(s.is_best_te)
+            df_data['best_va'].append(s.is_best_va)
             df_data['name'].append(s.name)
         df = pd.DataFrame(data=df_data)
         df.to_csv(self.res_path + r'/' + self.name + '.csv', index=False)
-
-    def read_mnist(self):
-        '''
-        Read the mnist.pkl.gz
-        '''
-        mnist_file = self.wd + r'/mnist.pkl.gz'
-        f = gzip.open(mnist_file, 'rb')
-        train_data, val_data, test_data = load(f, encoding='latin1')
-        f.close()    
-        self.train_X, self.train_Y = train_data
-        self.val_X, self.val_Y = val_data
-        self.test_X, self.test_Y = test_data
         
